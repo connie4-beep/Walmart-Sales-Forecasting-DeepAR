@@ -1,0 +1,665 @@
+install.packages("pdftools")
+install.packages("data.table")
+library(readr)
+library(pdftools)
+library(tidyverse)
+library(dplyr)
+library(tidyr)
+library(readr)
+library(ggplot2)
+library(dplyr)
+library(lubridate)
+getwd()
+setwd("/Users/conniezhang/Desktop/ECON491/data/")
+calendar <- read_csv("/Users/conniezhang/Desktop/ECON491/data/Calendar (1).csv")
+sales <- read_csv("/Users/conniezhang/Desktop/ECON491/data/Sales Train Validation.csv")
+sales_test <- read_csv("/Users/conniezhang/Desktop/ECON491/data/Sales Test Validation.csv")
+
+
+calendar <- calendar %>%
+  mutate(
+    d = paste0("d_", row_number())
+  )
+sales_long <- sales %>%
+  pivot_longer(
+    cols = starts_with("d_"),
+    names_to = "d",
+    values_to = "sales"
+  )
+sales_full <- sales_long %>%
+  left_join(calendar, by = "d")
+
+dept_month <- sales_full %>%
+  group_by(dept_id, year, month) %>%
+  summarise(
+    total_sales = sum(sales, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+dept_month <- dept_month %>%
+  mutate(
+    year_month = as.Date(paste(year, month, "01", sep = "-"))
+  )
+########################################################################
+########################################################################
+#PLOT
+
+
+#Graph 1
+#by year
+
+library(scales)
+
+
+ggplot(dept_month,
+       aes(x = year_month, y = total_sales, color = dept_id)) +
+  geom_line(linewidth = 1) +
+  scale_x_date(
+    date_breaks = "1 year",
+    date_labels = "%Y"
+  ) +
+  scale_y_continuous(
+    labels = label_comma()
+  ) +
+  labs(
+    title = "Monthly Total Sales by Walmart Department",
+    x = "Year",
+    y = "Total Units Sold",
+    color = "Department"
+  ) +
+  theme_minimal()
+
+#by quarter
+dept_quarter <- sales_full %>%
+  mutate(
+    quarter = paste0("Q", ceiling(month / 3))
+  ) %>%
+  group_by(dept_id, year, quarter) %>%
+  summarise(
+    total_sales = sum(sales, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+
+dept_quarter <- dept_quarter %>%
+  mutate(
+    year_quarter = paste(year, quarter),         
+    year_quarter = factor(year_quarter,
+                          levels = unique(year_quarter))  
+  )
+
+ggplot(dept_quarter,
+       aes(x = year_quarter,
+           y = total_sales,
+           color = dept_id,
+           group = dept_id)) +
+  geom_line(linewidth = 1) +
+  scale_y_continuous(labels = label_comma()) + 
+  labs(
+    title = "Quarterly Total Sales by Walmart Department",
+    x = "Year–Quarter",
+    y = "Total Units Sold",
+    color = "Department"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)  
+  )
+
+
+# Graph2
+dept_total <- sales_full %>%
+  group_by(dept_id) %>%
+  summarise(
+    total_sales = sum(sales, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+ggplot(dept_total,
+       aes(x = reorder(dept_id, total_sales),
+           y = total_sales,
+           fill = dept_id)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  scale_fill_brewer(palette = "Blues") +
+  scale_y_continuous(labels = scales::label_comma()) +
+  labs(
+    title = "Total Sales by Walmart Department",
+    x = "Department",
+    y = "Total Units Sold"
+  ) +
+  theme_minimal()
+
+#graph 3
+dept_state <- sales_full %>%
+  group_by(dept_id, state_id) %>%
+  summarise(
+    total_sales = sum(sales, na.rm = TRUE),
+    .groups = "drop"
+  )
+ggplot(dept_state,
+       aes(x = dept_id,
+           y = total_sales,
+           fill = state_id)) +
+  geom_col() +
+  coord_flip() +
+  scale_fill_brewer(palette = "Blues") +
+  scale_y_continuous(labels = scales::label_comma()) +
+  labs(
+    title = "Total Sales by Department and State",
+    x = "Department",
+    y = "Total Units Sold",
+    fill = "State"
+  ) +
+  theme_minimal()
+
+########################################################################
+########################################################################
+#adding weighted prices
+
+price <- read.csv("sell_prices.csv")
+
+library(data.table)
+library(dplyr)
+
+calendar <- as.data.table(calendar)
+calendar[, d := paste0("d_", .I)]  
+
+sales_dt <- as.data.table(sales)
+
+id_cols <- c("store_id", "item_id", "dept_id")
+d_cols  <- grep("^d_", names(sales_dt), value = TRUE)
+
+wk_to_ds <- split(calendar$d, calendar$wm_yr_wk)
+
+weekly_list <- vector("list", length(wk_to_ds))
+wks <- names(wk_to_ds)
+
+
+for (k in seq_along(wks)) {
+  wk <- wks[k]
+  ds <- wk_to_ds[[wk]]
+  ds <- intersect(ds, d_cols) 
+  
+  if (length(ds) == 0) next
+  
+  tmp <- sales_dt[, .(
+    store_id = store_id,
+    item_id  = item_id,
+    dept_id  = dept_id,
+    wm_yr_wk = as.integer(wk),
+    weekly_sales = rowSums(.SD, na.rm = TRUE)
+  ), .SDcols = ds]
+  
+  tmp <- tmp[weekly_sales > 0]
+  
+  weekly_list[[k]] <- tmp
+}
+
+sales_week <- rbindlist(weekly_list, use.names = TRUE, fill = TRUE)
+
+price_dt <- as.data.table(price)  
+
+setkey(sales_week, store_id, item_id, wm_yr_wk)
+setkey(price_dt,   store_id, item_id, wm_yr_wk)
+
+sales_price <- price_dt[sales_week]  
+
+
+dept_week <- sales_price[!is.na(sell_price), .(
+  total_sales = sum(weekly_sales, na.rm = TRUE),
+  weighted_price = sum(sell_price * weekly_sales, na.rm = TRUE) /
+    sum(weekly_sales, na.rm = TRUE)
+), by = .(dept_id, wm_yr_wk)]
+
+week_calendar <- calendar[, .(
+  year  = first(year),
+  month = first(month)
+), by = wm_yr_wk]
+
+setkey(dept_week, wm_yr_wk)
+setkey(week_calendar, wm_yr_wk)
+
+dept_week <- week_calendar[dept_week] 
+
+dept_month_price_weighted <- dept_week[, .(
+  total_sales = sum(total_sales, na.rm = TRUE),
+  weighted_price_m = sum(weighted_price * total_sales, na.rm = TRUE) /
+    sum(total_sales, na.rm = TRUE)
+), by = .(dept_id, year, month)]
+
+str(dept_month_price_weighted)
+
+#lifetime * sales
+dept_lifetime <- dept_month_price_weighted %>%
+  group_by(dept_id) %>%
+  summarise(
+    dept_lifetime_sales = sum(total_sales, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+total_all_sales <- sum(dept_lifetime$dept_lifetime_sales)
+
+dept_lifetime <- dept_lifetime %>%
+  mutate(
+    dept_weight = dept_lifetime_sales / total_all_sales
+  )
+
+dept_lifetime
+
+# weighted price * department
+dept_weighted_price <- sales_price[!is.na(sell_price), .(
+  weighted_price = sum(sell_price * weekly_sales, na.rm = TRUE) /
+    sum(weekly_sales, na.rm = TRUE)
+), by = dept_id]
+
+dept_weighted_price
+
+########################################################################
+########################################################################
+#Sales_Test Data Preparation
+build_dept_month_data <- function(sales_input, calendar, price) {
+  calendar_dt <- as.data.table(copy(calendar))
+  sales_dt <- as.data.table(copy(sales_input))
+  price_dt <- as.data.table(copy(price))
+  
+  d_cols <- grep("^d_", names(sales_dt), value = TRUE)
+  
+  wk_to_ds <- split(calendar_dt$d, calendar_dt$wm_yr_wk)
+  
+  weekly_list <- vector("list", length(wk_to_ds))
+  wks <- names(wk_to_ds)
+  
+  for (k in seq_along(wks)) {
+    wk <- wks[k]
+    ds <- wk_to_ds[[wk]]
+    ds <- intersect(ds, d_cols)
+    
+    if (length(ds) == 0) next
+    
+    tmp <- sales_dt[, .(
+      store_id = store_id,
+      item_id = item_id,
+      dept_id = dept_id,
+      wm_yr_wk = as.integer(wk),
+      weekly_sales = rowSums(.SD, na.rm = TRUE)
+    ), .SDcols = ds]
+    
+    tmp <- tmp[weekly_sales > 0]
+    weekly_list[[k]] <- tmp
+  }
+  
+  sales_week <- rbindlist(weekly_list, use.names = TRUE, fill = TRUE)
+  
+  setkey(sales_week, store_id, item_id, wm_yr_wk)
+  setkey(price_dt, store_id, item_id, wm_yr_wk)
+  
+  sales_price <- price_dt[sales_week]
+  
+  dept_week <- sales_price[!is.na(sell_price), .(
+    total_sales = sum(weekly_sales, na.rm = TRUE),
+    weighted_price = sum(sell_price * weekly_sales, na.rm = TRUE) /
+      sum(weekly_sales, na.rm = TRUE)
+  ), by = .(dept_id, wm_yr_wk)]
+  
+  week_calendar <- calendar_dt[, .(
+    year = first(year),
+    month = first(month)
+  ), by = wm_yr_wk]
+  
+  setkey(dept_week, wm_yr_wk)
+  setkey(week_calendar, wm_yr_wk)
+  
+  dept_week <- week_calendar[dept_week]
+  
+  dept_month <- dept_week[, .(
+    total_sales = sum(total_sales, na.rm = TRUE),
+    weighted_price_m = sum(weighted_price * total_sales, na.rm = TRUE) /
+      sum(total_sales, na.rm = TRUE)
+  ), by = .(dept_id, year, month)]
+  
+  dept_month <- as.data.frame(dept_month) %>%
+    arrange(dept_id, year, month) %>%
+    group_by(dept_id) %>%
+    mutate(t = row_number()) %>%
+    ungroup()
+  
+  dept_month$month <- factor(dept_month$month)
+  
+  return(dept_month)
+}
+#Prepare for Modeling
+train_data <- build_dept_month_data(sales, calendar, price)
+test_data  <- build_dept_month_data(sales_test, calendar, price)
+
+last_t <- train_data %>%
+  group_by(dept_id) %>%
+  summarise(last_t = max(t), .groups = "drop")
+
+test_data <- test_data %>%
+  select(-t) %>%
+  left_join(last_t, by = "dept_id") %>%
+  group_by(dept_id) %>%
+  arrange(year, month, .by_group = TRUE) %>%
+  mutate(t = last_t + row_number()) %>%
+  ungroup() %>%
+  select(-last_t)
+
+########################################################################
+########################################################################
+#Modeling
+calendar <- read.csv("/Users/conniezhang/Desktop/ECON491/data/Calendar (1).csv", stringsAsFactors = FALSE)
+sales_train <- read.csv("/Users/conniezhang/Desktop/ECON491/data/Sales Train Validation.csv", stringsAsFactors = FALSE)
+sales_test  <- read.csv("/Users/conniezhang/Desktop/ECON491/data/Sales Test Validation.csv", stringsAsFactors = FALSE)
+price <- read.csv("sell_prices.csv", stringsAsFactors = FALSE)
+
+calendar$date <- as.Date(calendar$date)
+calendar$d <- paste0("d_", seq_len(nrow(calendar)))
+
+sales_train_dt <- as.data.table(sales_train)
+sales_test_dt  <- as.data.table(sales_test)
+price_dt       <- as.data.table(price)
+
+setkey(price_dt, store_id, item_id, wm_yr_wk)
+
+##Avoid Memory Usage, use function to combine
+build_dept_day_data <- function(sales_dt, calendar_df, price_dt) {
+  id_part <- sales_dt[, .(store_id, item_id, dept_id)]
+  d_cols <- grep("^d_", names(sales_dt), value = TRUE)
+  
+  out_list <- vector("list", length(d_cols))
+  
+  for (i in seq_along(d_cols)) {
+    dcol <- d_cols[i]
+    
+    cal_row <- calendar_df[calendar_df$d == dcol, ]
+    wk_i    <- cal_row$wm_yr_wk[1]
+    date_i  <- cal_row$date[1]
+    year_i  <- cal_row$year[1]
+    month_i <- cal_row$month[1]
+    wday_i  <- cal_row$wday[1]
+    weekday_i <- cal_row$weekday[1]
+    
+    day_sales <- copy(id_part)
+    day_sales[, sales := sales_dt[[dcol]]]
+    day_sales <- day_sales[sales > 0]
+    
+    day_sales[, wm_yr_wk := wk_i]
+    setkey(day_sales, store_id, item_id, wm_yr_wk)
+    day_sales <- price_dt[day_sales]
+    
+    dept_day_i <- day_sales[!is.na(sell_price), .(
+      total_sales = sum(sales, na.rm = TRUE),
+      weighted_price = sum(sell_price * sales, na.rm = TRUE) / sum(sales, na.rm = TRUE)
+    ), by = .(dept_id)]
+    
+    dept_day_i[, `:=`(
+      date = date_i,
+      year = year_i,
+      month = month_i,
+      wday = wday_i,
+      weekday = weekday_i
+    )]
+    
+    out_list[[i]] <- dept_day_i
+  }
+  
+  dept_day <- rbindlist(out_list, use.names = TRUE, fill = TRUE)
+  
+  dept_day <- as.data.frame(dept_day) %>%
+    arrange(dept_id, date) %>%
+    group_by(dept_id) %>%
+    mutate(
+      sales_lag_1 = lag(total_sales),
+      t = row_number()
+    ) %>%
+    ungroup()
+  
+  dept_day$month <- factor(dept_day$month)
+  dept_day$weekday <- factor(dept_day$weekday)
+  
+  dept_day
+}
+###prepare train,test data for modeling
+train_data <- build_dept_day_data(sales_train_dt, calendar, price_dt)
+test_data  <- build_dept_day_data(sales_test_dt,  calendar, price_dt)
+
+last_train_sales <- train_data %>%
+  group_by(dept_id) %>%
+  summarise(last_sales = dplyr::last(total_sales), .groups = "drop")
+
+test_data <- test_data %>%
+  left_join(last_train_sales, by = "dept_id") %>%
+  group_by(dept_id) %>%
+  arrange(date, .by_group = TRUE) %>%
+  mutate(
+    sales_lag_1 = ifelse(row_number() == 1, last_sales, lag(total_sales))
+  ) %>%
+  ungroup() %>%
+  select(-last_sales)
+
+train_data2 <- train_data %>%
+  filter(!is.na(sales_lag_1), !is.na(weighted_price))
+
+test_data2 <- test_data %>%
+  filter(!is.na(sales_lag_1), !is.na(weighted_price))
+
+#Modeling
+calendar <- read.csv("/Users/conniezhang/Desktop/ECON491/data/Calendar (1).csv", stringsAsFactors = FALSE)
+sales_train <- read.csv("/Users/conniezhang/Desktop/ECON491/data/Sales Train Validation.csv", stringsAsFactors = FALSE)
+sales_test  <- read.csv("/Users/conniezhang/Desktop/ECON491/data/Sales Test Validation.csv", stringsAsFactors = FALSE)
+price <- read.csv("sell_prices.csv", stringsAsFactors = FALSE)
+
+calendar$date <- as.Date(calendar$date)
+calendar$d <- paste0("d_", seq_len(nrow(calendar)))
+
+sales_train_dt <- as.data.table(sales_train)
+sales_test_dt  <- as.data.table(sales_test)
+price_dt       <- as.data.table(price)
+
+setkey(price_dt, store_id, item_id, wm_yr_wk)
+
+##Avoid Memory Usage, use function to combine
+build_dept_day_data <- function(sales_dt, calendar_df, price_dt) {
+  id_part <- sales_dt[, .(store_id, item_id, dept_id)]
+  d_cols <- grep("^d_", names(sales_dt), value = TRUE)
+  
+  out_list <- vector("list", length(d_cols))
+  
+  for (i in seq_along(d_cols)) {
+    dcol <- d_cols[i]
+    
+    cal_row <- calendar_df[calendar_df$d == dcol, ]
+    wk_i    <- cal_row$wm_yr_wk[1]
+    date_i  <- cal_row$date[1]
+    year_i  <- cal_row$year[1]
+    month_i <- cal_row$month[1]
+    wday_i  <- cal_row$wday[1]
+    weekday_i <- cal_row$weekday[1]
+    
+    day_sales <- copy(id_part)
+    day_sales[, sales := sales_dt[[dcol]]]
+    day_sales <- day_sales[sales > 0]
+    
+    day_sales[, wm_yr_wk := wk_i]
+    setkey(day_sales, store_id, item_id, wm_yr_wk)
+    day_sales <- price_dt[day_sales]
+    
+    dept_day_i <- day_sales[!is.na(sell_price), .(
+      total_sales = sum(sales, na.rm = TRUE),
+      weighted_price = sum(sell_price * sales, na.rm = TRUE) / sum(sales, na.rm = TRUE)
+    ), by = .(dept_id)]
+    
+    dept_day_i[, `:=`(
+      date = date_i,
+      year = year_i,
+      month = month_i,
+      wday = wday_i,
+      weekday = weekday_i
+    )]
+    
+    out_list[[i]] <- dept_day_i
+  }
+  
+  dept_day <- rbindlist(out_list, use.names = TRUE, fill = TRUE)
+  
+  dept_day <- as.data.frame(dept_day) %>%
+    arrange(dept_id, date) %>%
+    group_by(dept_id) %>%
+    mutate(
+      sales_lag_1 = lag(total_sales),
+      t = row_number()
+    ) %>%
+    ungroup()
+  
+  dept_day$month <- factor(dept_day$month)
+  dept_day$weekday <- factor(dept_day$weekday)
+  
+  dept_day
+}
+###prepare train,test data for modeling
+train_data <- build_dept_day_data(sales_train_dt, calendar, price_dt)
+test_data  <- build_dept_day_data(sales_test_dt,  calendar, price_dt)
+
+last_train_sales <- train_data %>%
+  group_by(dept_id) %>%
+  summarise(last_sales = dplyr::last(total_sales), .groups = "drop")
+
+test_data <- test_data %>%
+  left_join(last_train_sales, by = "dept_id") %>%
+  group_by(dept_id) %>%
+  arrange(date, .by_group = TRUE) %>%
+  mutate(
+    sales_lag_1 = ifelse(row_number() == 1, last_sales, lag(total_sales))
+  ) %>%
+  ungroup() %>%
+  select(-last_sales)
+
+train_data2 <- train_data %>%
+  filter(!is.na(sales_lag_1), !is.na(weighted_price))
+
+test_data2 <- test_data %>%
+  filter(!is.na(sales_lag_1), !is.na(weighted_price))
+
+install.packages("stargazer")
+library(stargazer)
+##building model
+model_benchmark <- lm(
+  total_sales ~ weighted_price + weekday + month,
+  data = train_data2
+)
+summary(model_benchmark)
+test_data2$pred_benchmark <- predict(model_benchmark, newdata = test_data2)
+rmse_benchmark <- sqrt(mean((test_data2$total_sales - test_data2$pred_benchmark)^2))
+rmse_benchmark
+
+# 2. IMPROVED MODEL (Your advanced model)
+model_final <- lm(
+  log(total_sales + 1) ~ log(weighted_price) + sales_lag_1 + weekday + month + dept_id,
+  data = train_data2
+)
+summary(model_final)
+# Improved Predictions & RMSE
+test_data2$pred_log <- predict(model_final, newdata = test_data2)
+test_data2$pred_improved <- exp(test_data2$pred_log) - 1
+rmse_improved <- sqrt(mean((test_data2$total_sales - test_data2$pred_improved)^2))
+rmse_improved
+
+
+cat("Benchmark RMSE: ", round(rmse_benchmark, 2), "\n")
+cat("Improved RMSE:  ", round(rmse_improved, 2), "\n")
+
+# Use stargazer to show both models side-by-side
+stargazer(model_benchmark, model_final, 
+          type = "text", 
+          title = "Model Comparison: Benchmark vs Improved",
+          column.labels = c("Simple Model", "Improved Model"))
+# test_data2$pred_log <- predict(model_final, newdata = test_data2)
+# test_data2$pred_sales <- exp(test_data2$pred_log) - 1
+
+# rmse <- sqrt(mean((test_data2$total_sales - test_data2$pred_sales)^2))
+# rmse
+
+library(dplyr)
+
+# 1. Get the events
+cal_events <- calendar %>%
+  select(date, event_name_1) %>%
+  mutate(
+    event_name_1 = ifelse(is.na(event_name_1) | event_name_1 == "", "No_Event", event_name_1),
+    event_name_1 = factor(event_name_1)
+  )
+
+# 2. Join to your original, clean data
+train_data_events <- train_data2 %>% left_join(cal_events, by = "date")
+test_data_events <- test_data2 %>% left_join(cal_events, by = "date")
+
+# 3. Model just the events
+model_events_only <- lm(
+  log(total_sales + 1) ~ log(weighted_price) + sales_lag_1 + weekday + month + dept_id + event_name_1,
+  data = train_data_events
+)
+summary(model_events_only)
+# 4. Predict and check RMSE
+test_data_events$pred_log <- predict(model_events_only, newdata = test_data_events)
+test_data_events$pred_actual <- exp(test_data_events$pred_log) - 1
+rmse_events <- sqrt(mean((test_data_events$total_sales - test_data_events$pred_actual)^2, na.rm = TRUE))
+
+print(paste("Events-Only RMSE:", round(rmse_events, 2)))
+
+##Graph 1
+ggplot(test_data2, aes(x = date)) +
+  geom_line(aes(y = total_sales, color = "Real"), linewidth = 1) +
+  geom_line(aes(y = pred_sales, color = "Predicted"), linewidth = 1) +
+  facet_wrap(~ dept_id, scales = "free_y") +
+  labs(
+    title = "Predicted vs Real Department Sales",
+    x = "Date",
+    y = "Sales",
+    color = ""
+  ) +
+  theme_minimal()
+
+##Graph 2 By IDX
+plot_data <- test_data2 %>%
+  group_by(dept_id) %>%
+  mutate(
+    real_index = total_sales / mean(total_sales, na.rm = TRUE),
+    pred_index = pred_sales / mean(total_sales, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+ggplot(plot_data, aes(x = date)) +
+  geom_line(aes(y = real_index, color = "Real"), linewidth = 1) +
+  geom_line(aes(y = pred_index, color = "Predicted"), linewidth = 1) +
+  facet_wrap(~ dept_id, ncol = 3) +
+  labs(
+    title = "Predicted vs Real Department Sales (Indexed)",
+    x = "Date",
+    y = "Index (Mean = 1)",
+    color = ""
+  ) +
+  theme_minimal()
+
+##Graph 3 Total
+summary_plot_data <- test_data2 %>%
+  group_by(date) %>%
+  summarise(
+    actual_sales = sum(total_sales, na.rm = TRUE),
+    predicted_sales = sum(pred_sales, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+ggplot(summary_plot_data, aes(x = date)) +
+  geom_line(aes(y = actual_sales, color = "Actual"), linewidth = 1.2) +
+  geom_line(aes(y = predicted_sales, color = "Predicted"),
+            linewidth = 1.2, linetype = "dashed") +
+  labs(
+    title = "Model Performance: Predicted vs Actual Sales",
+    subtitle = "Test Validation Period (Apr 25 – May 22, 2016)",
+    x = "Date",
+    y = "Total Units Sold",
+    color = "Metric"
+  ) +
+  theme_minimal()
+

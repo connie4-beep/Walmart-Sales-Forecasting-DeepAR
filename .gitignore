@@ -1,0 +1,14 @@
+# Ignore the massive Walmart data files
+data/
+*.csv
+*.RData
+
+# Ignore the saved DeepAR model weights
+my_best_deepar_model/
+
+# Ignore Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Ignore Python cache
+__pycache__/
+*.pyc
